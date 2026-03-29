@@ -1,0 +1,93 @@
+name: "Deploy project"
+description: "Deploy a docker compose project"
+
+inputs:
+  project:
+    description: "Project name"
+    required: true
+  login:
+    description: "SSH login"
+    required: true
+  host:
+    description: "SSH host"
+    required: true
+  fingerprint:
+    description: "SSH fingerprint"
+    required: false
+  key:
+    description: "SSH key"
+    required: true
+  source:
+    description: "Source directory"
+    required: false
+    default: "."
+  destination:
+    description: "Destination directory (without project name)"
+    required: true
+
+runs:
+
+  using: "composite"
+
+  steps:
+    - shell: bash
+      run: |
+        echo "🔑 Setting up SSH..."
+        mkdir -p ~/.ssh
+
+        echo "${{ inputs.key }}" | tr -d '\r' > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        eval "$(ssh-agent -s)"
+        ssh-add ~/.ssh/id_rsa
+
+        ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+
+        if [ -n "${{ inputs.fingerprint }}" ]; then
+          echo "🔐 Using provided fingerprint"
+
+          ssh-keyscan -H ${{ inputs.host }} > /tmp/host_key
+
+          ACTUAL_FP=$(ssh-keygen -lf /tmp/host_key | awk '{print $2}')
+
+          if [ "$ACTUAL_FP" != "${{ inputs.fingerprint }}" ]; then
+            echo "❌ Fingerprint mismatch!"
+            echo "Expected: ${{ inputs.fingerprint }}"
+            echo "Actual:   $ACTUAL_FP"
+            exit 1
+          fi
+
+          cat /tmp/host_key >> ~/.ssh/known_hosts
+
+        else
+          echo "⚠️ No fingerprint provided, using keyscan"
+          ssh-keyscan -H ${{ inputs.host }} >> ~/.ssh/known_hosts
+        fi
+
+    - shell: bash
+      run: |
+        echo "📂 Syncing files via rsync..."
+        ssh ${{ inputs.login }}@${{ inputs.host }} "mkdir -p /opt/${{ inputs.project }}"
+        rsync -avz --delete --exclude='.git' --exclude='.github' \
+          ${{ inputs.source }} ${{ inputs.login }}@${{ inputs.host }}:${{ inputs.destination }}/
+
+    - shell: bash
+      run: |
+        echo "🐳 Connecting to Docker daemon..."
+        docker context create remote-server --docker "host=ssh://${{ inputs.login }}@${{ inputs.host }}"
+        docker context use remote-server
+
+    - shell: bash
+      run: |
+        echo "📥 Pulling images..."
+        docker compose -f ${{ inputs.source }}/docker-compose.yml pull
+
+        echo "🛑 Stopping old containers..."
+        docker compose -f ${{ inputs.source }}/docker-compose.yml -p ${{ inputs.project }} down
+
+        echo "🚀 Starting new containers..."
+        docker compose -f ${{ inputs.source }}/docker-compose.yml -p ${{ inputs.project }} up -d
+    
+    - shell: bash
+      run: |
+        echo "📊 Checking status..."
+        docker compose ls --filter name=${{ inputs.project }}
