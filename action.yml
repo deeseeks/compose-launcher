@@ -23,7 +23,7 @@ inputs:
     default: "."
   destination:
     description: "Destination directory (without project name)"
-    required: true
+    required: false
 
 runs:
 
@@ -66,9 +66,17 @@ runs:
     - shell: bash
       run: |
         echo "📂 Syncing files via rsync..."
-        ssh ${{ inputs.login }}@${{ inputs.host }} "mkdir -p /opt/${{ inputs.project }}"
+
+        if [ -n "${{ inputs.destination }}" ]; then
+          DESTINATION=${{ inputs.destination }}
+        fi
+        else
+          DESTINATION="/opt/${{ inputs.project }}"
+        fi
+
+        ssh ${{ inputs.login }}@${{ inputs.host }} "mkdir -p /opt/$DESTINATION"
         rsync -avz --delete --exclude='.git' --exclude='.github' \
-          ${{ inputs.source }} ${{ inputs.login }}@${{ inputs.host }}:${{ inputs.destination }}/
+          ${{ inputs.source }} ${{ inputs.login }}@${{ inputs.host }}:$DESTINATION/
 
     - shell: bash
       run: |
